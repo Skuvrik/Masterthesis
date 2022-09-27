@@ -1,0 +1,11 @@
+{
+    "cSpell.words": [
+        "autopep",
+        "mypy",
+        "pycodestyle",
+        "pydocstyle",
+        "pylint",
+        "yapf"
+    ],
+    "jupyter.jupyterServerType": "local"
+}
