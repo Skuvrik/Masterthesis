@@ -13,6 +13,7 @@ class BasicBlock(nn.Module):
         self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1,
                                padding=1, bias=False)
         self.droprate = dropRate
+
     def forward(self, x):
         out = self.conv1(self.relu(self.bn1(x)))
         if self.droprate > 0:
@@ -31,6 +32,7 @@ class BottleneckBlock(nn.Module):
         self.conv2 = nn.Conv2d(inter_planes, out_planes, kernel_size=3, stride=1,
                                padding=1, bias=False)
         self.droprate = dropRate
+
     def forward(self, x):
         out = self.conv1(self.relu(self.bn1(x)))
         if self.droprate > 0:
@@ -48,6 +50,7 @@ class TransitionBlock(nn.Module):
         self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=1,
                                padding=0, bias=False)
         self.droprate = dropRate
+
     def forward(self, x):
         out = self.conv1(self.relu(self.bn1(x)))
         if self.droprate > 0:
@@ -111,11 +114,27 @@ class DenseNet3(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
+        # print(f"0: {x.shape}")
+
         out = self.conv1(x)
+        # print(f"1 Conv: {out.shape}")
+
         out = self.trans1(self.block1(out))
+        # print(f"2 Block: {out.shape}")
+        
         out = self.trans2(self.block2(out))
+        # print(f"3 Trans and block: {out.shape}")
+
         out = self.block3(out)
+        # print(f"4 Block: {out.shape}")
+
         out = self.relu(self.bn1(out))
-        out = F.avg_pool2d(out, 8)
+        # print(f"5 BNorm: {out.shape}")
+
+        out = F.avg_pool2d(out, 40)
+        # print(f"6 AvgPool: {out.shape}")
+
         out = out.view(-1, self.in_planes)
+        # print(f"7 View: {out.shape}")
+
         return self.fc(out)
