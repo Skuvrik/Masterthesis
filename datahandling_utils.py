@@ -5,6 +5,7 @@ import re, random
 import torch, os
 from torch.utils.data import Dataset
 
+# INDEXING
 def getPaths(path):
     paths = []
     dir_list = []
@@ -68,6 +69,7 @@ def get_curr_slice_and_volume(image, num_slices = 48):
         volume_num = number // num_slices 
     return slice_num, volume_num+1
 
+# SPLITTING
 def get_train_test_split_on_patients(data, train_size = 0.8, slice_number=None):
     # Jezuz this needs more consistent datastructures.
     random.seed(42)
@@ -91,6 +93,7 @@ def get_slice_volumes_for_one_patient(data, patient, slice_number):
     slices = data.loc[(data['Patient'] == patient) & (data['Slice'] == slice_number)]
     return slices
 
+# PREPROCESSING
 def createImageArray(paths):
     base_slice = pdc.read_file(paths.iloc[[0]]['ImagePath'].item())
     base_slice = base_slice.pixel_array
@@ -104,9 +107,12 @@ def createImageArray(paths):
 
 def get_max_intensity_volume_index(array):
     vol_intensities = np.zeros(array.shape[0])
-    for volume_num in range(1, array.shape[0]+1):
-        vol_intensities[volume_num-1] = np.sum(array[volume_num-1, : , : , :])
-    return np.argmax(vol_intensities)
+    slopes = np.zeros(array.shape[0])
+    for volume_num in range(array.shape[0]):
+        vol_intensities[volume_num] = np.sum(array[volume_num, : , : , :])
+    for i in range(len(vol_intensities)-1):
+        slopes[i] = vol_intensities[i+1] - vol_intensities[i]
+    return np.argmax(slopes) +1
 
 def get_max_intensity_for_dataset(data, force = False):
     patients = np.unique(data['Patient'])
@@ -124,45 +130,34 @@ def get_max_intensity_for_dataset(data, force = False):
     np.savetxt(path, intensities, delimiter=',')
     return intensities
 
-def get_model_performance_metrics(model, images, labels):
-    # Copy dataframe due to the use of iterrows
-    images_copy = images.copy()
-    TP = 0
-    FP = 0
-    TN = 0
-    FN = 0
-    for _, selected in images_copy.iterrows():
-        model.eval()
-        image = pdc.read_file(selected['ImagePath'])
-        image = torch.tensor(np.expand_dims(image.pixel_array.astype("int32"), axis=(0,1)), dtype=torch.float32)
-        image = image.to('cuda')
-        actual = labels[(labels['Patient'] == int(selected['Patient'])) & (labels['Slice'] == int(selected['Slice']))]['Label'].item()
-        predicted = int(round(torch.sigmoid(model(image)).item()))
-        if predicted == 1 and actual == 1:
-            TP += 1
-        elif predicted == 1 and actual == 0:
-            FP += 1
-        elif predicted == 0 and actual == 0:
-            TN += 1
-        elif predicted == 0 and actual == 1:
-            FN += 1
-        else:
-            pass
-    try:
-        accuracy = round((TP+TN)/(TP+FP+TN+FN),2)
-    except:
-        accuracy = 0
-    try:
-        precision = round(TP/(FP+TP), 2)
-    except:
-        precision = 0
-    try: 
-        recall = round(TP/(TP+FN), 2)
-    except:
-        recall = 0
-    print(f"TP: {TP}, FP: {FP}, TN: {TN}, FN: {FN}")
-    print(f"Accuracy: {accuracy}, Precision: {precision}, Recall: {recall}")
+def add_extra_volumes(image_data, labels, copy_data, extra_vols, patient, volume_index):
+    # Adds extra volumes of positively labeled slices
+    extra_count = 0
+    for i in range(int(volume_index)+1, extra_vols+int(volume_index)+1):
+        extra_data = image_data[(image_data['Patient']== patient) & (image_data['Slice'].isin(labels[(labels['Patient'] == patient) & (labels['Label'] == 1)]['Slice']))]
+        extra_count += len(extra_data[extra_data['Volume'] == i])
+        copy_data = pd.concat([copy_data, extra_data[extra_data['Volume'] == i]])
+    return copy_data, extra_count
 
+def filter_on_intensity_and_add_data(image_data, labels, vol_intensities, extra_vols=0):
+    copy_data = image_data.copy()
+    original_count = len(copy_data)
+    extra_count = 0
+    patient_filter = np.isin(vol_intensities[:,0], np.unique(copy_data['Patient']))
+    vol_intensities = vol_intensities[patient_filter]
+    for patient, volume_index in zip(vol_intensities[:, 0], vol_intensities[:, 1]):
+        before = len(copy_data)
+        copy_data = copy_data.drop(copy_data[copy_data['Patient'] == int(patient)].index.intersection(copy_data[copy_data['Volume'] != int(volume_index)].index))
+        original_count -= before - len(copy_data)
+
+        if extra_vols + volume_index < 48:
+            copy_data, count = add_extra_volumes(image_data, labels, copy_data, extra_vols, patient, volume_index)
+            extra_count += count
+    if extra_vols > 0:
+        print(f"Added data {extra_count}. Original amount of data {original_count}")
+    return copy_data
+
+# DATASETS
 class ImageDataset(Dataset):
     def __init__(self, X_df, y_df):
         self.X = X_df
@@ -191,7 +186,7 @@ class SliceIntensityDataset(Dataset):
         dcm = pdc.read_file(selected_X["ImagePath"].item())
         image = dcm.pixel_array.astype('int16')
         label = self.y[(self.y['Patient'] == int(selected_X['Patient'])) & (self.y['Slice'] == int(selected_X['Slice']))]['Label'].item()
-
+        image = image / np.max(image)
         return torch.tensor(image, dtype=torch.float), torch.tensor(label, dtype=torch.float)
 
 # Maybe useful code..

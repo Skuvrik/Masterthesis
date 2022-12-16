@@ -102,6 +102,7 @@ def get_AIF_KMeans(slices, seed, max_voxels = 20, visualize = False):
     coordinates = []
     final_curves = []
     for curve in selected_curves:
+        # Hashing needs to be done manually
         coordinate = curve_map[hash(curve.tobytes())]
         coordinates.append(coordinate)
         final_curves.append(slices[:, coordinate[0], coordinate[1]])

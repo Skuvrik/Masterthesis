@@ -12,7 +12,7 @@ class BasicBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=1,
                                padding=1, bias=False)
-        self.droprate = dropRate
+        self.droprate = dropRate 
 
     def forward(self, x):
         out = self.conv1(self.relu(self.bn1(x)))
