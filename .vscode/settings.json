@@ -7,5 +7,7 @@
         "pylint",
         "yapf"
     ],
-    "jupyter.jupyterServerType": "local"
+    "jupyter.jupyterServerType": "local",
+    "python.linting.enabled": false,
+    "cSpell.enabled": false
 }
