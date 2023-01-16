@@ -96,10 +96,10 @@ def get_model_performance_metrics(model, images, labels, device, normalize):
     for _, selected in images_copy.iterrows():
         model.eval()
         image = pdc.read_file(selected['ImagePath'])
-        image = np.expand_dims(image.pixel_array.astype("int32"), axis=(0,1))
+        image = np.expand_dims(image.pixel_array.astype("int16"), axis=(0,1))
         if normalize: 
             image = image / np.max(image)
-        image = torch.tensor(image, dtype=torch.float32)
+        image = torch.tensor(image, dtype=torch.float)
         image = image.to(device)
         actual = labels[(labels['Patient'] == int(selected['Patient'])) & (labels['Slice'] == int(selected['Slice']))]['Label'].item()
         predicted = int(round(torch.sigmoid(model(image)).item()))

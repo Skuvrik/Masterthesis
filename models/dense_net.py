@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+# Source: https://github.com/andreasveit/densenet-pytorch
 
 class BasicBlock(nn.Module):
     def __init__(self, in_planes, out_planes, dropRate=0.0):
@@ -135,5 +135,4 @@ class DenseNet3(nn.Module):
 
         out = out.view(-1, self.in_planes)
         # print(f"7 View: {out.shape}")
-
         return self.fc(out)

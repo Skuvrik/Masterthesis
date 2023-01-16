@@ -22,17 +22,23 @@ def getPaths(path):
         return paths, dir_list
     return paths, dir_list[0]
 
-def createImageIndexCSV(path, force=False):
-    result_file_path = "data_indices.csv"
+def createImageIndexCSV(path, force=False, result_file_path = "data_indices.csv"):
     if os.path.isfile(result_file_path) and not force:
         return pd.read_csv(result_file_path, delimiter=',', index_col=0)
     result_frame = []
     paths, dirs = getPaths(path)
     for patient in dirs:
+        patient_data = []
+        slice_positions = []
         patient_paths = get_list_of_paths(paths, patient)
-        for image in patient_paths:
-            slice_num, volume_num = get_curr_slice_and_volume(image)
-            result_frame.append([patient, volume_num, slice_num, image])
+        for image_path in patient_paths:
+            dcm = pdc.read_file(image_path)
+            patient_data.append([patient, int(dcm.AcquisitionNumber), dcm.SliceLocation, image_path])
+            slice_positions.append(dcm.SliceLocation)
+        slice_positions = np.unique(np.array(slice_positions))
+        for data in patient_data:
+            slice_num = np.where(slice_positions == data[2])
+            result_frame.append([data[0], data[1], int(slice_num[0]) + 1, data[3]])
     df = pd.DataFrame(result_frame, columns= ["Patient", "Volume", "Slice", "ImagePath"])
     df.to_csv(result_file_path)
     return df
@@ -55,23 +61,9 @@ def get_list_of_paths(paths, patient):
     patient_paths = list(filter(patient_filter.match, paths))
     return patient_paths
 
-def get_curr_slice_and_volume(image, num_slices = 48):
-    split_list = image.split("_")
-    number = int(split_list[-1].split(".")[0])
-    if (number <= num_slices):
-        slice_num = number % (num_slices + 1)
-        volume_num = number // (num_slices + 1)
-    elif number % num_slices == 0:
-        slice_num = num_slices
-        volume_num = (number // num_slices) - 1
-    else:
-        slice_num = number % num_slices
-        volume_num = number // num_slices 
-    return slice_num, volume_num+1
-
 # SPLITTING
 def get_train_test_split_on_patients(data, train_size = 0.8, slice_number=None):
-    # Jezuz this needs more consistent datastructures.
+    # This needs more consistent datastructures.
     random.seed(42)
     patient_num = np.max(data['Patient'])
     selection = random.sample(list(range(1, patient_num+1)), k = patient_num)
@@ -156,6 +148,10 @@ def filter_on_intensity_and_add_data(image_data, labels, vol_intensities, extra_
     if extra_vols > 0:
         print(f"Added data {extra_count}. Original amount of data {original_count}")
     return copy_data
+
+def convert_signal(image_array: np.ndarray):
+    
+    pass
 
 # DATASETS
 class ImageDataset(Dataset):
