@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import numpy as np
 import pydicom as pdc
+from typing import Optional
+from utils.datahandling_utils import crop_image
 
 def train(train_loader, model, criterion, optimizer, device):
     losses = 0
@@ -10,13 +12,10 @@ def train(train_loader, model, criterion, optimizer, device):
     for i, (input,target) in enumerate(train_loader):
         target = torch.unsqueeze(target,1)
         target = target.to(device)
-        input = torch.permute(torch.unsqueeze(input, 0), (1, 0, 2, 3))
         input = input.to(device)
-        input_var = torch.autograd.Variable(input)
-        target_var = torch.autograd.Variable(target)
 
-        output = model(input_var)
-        loss = criterion(output, target_var)
+        output = model(input)
+        loss = criterion(output, target)
 
         optimizer.zero_grad()
         loss.backward()
@@ -34,11 +33,8 @@ def validate(test_loader, model, criterion, device, apr):
         for i, (input, target) in enumerate(test_loader):
             target = torch.unsqueeze(target,1)
             target = target.to(device)
-            input = torch.permute(torch.unsqueeze(input, 0), (1, 0, 2, 3))
             input = input.to(device)
-            input_var = torch.autograd.Variable(input)
-            target_var = torch.autograd.Variable(target)
-            output = model(input_var)
+            output = model(input)
             if apr:
                 for actual, predicted in zip(target, output):
                     predicted = int(round(torch.sigmoid(predicted).item()))
@@ -53,7 +49,7 @@ def validate(test_loader, model, criterion, device, apr):
                         FN += 1
                     else:
                         pass
-            loss = criterion(output, target_var)
+            loss = criterion(output, target)
             losses += loss / len(target)
         if apr:
             try:
@@ -68,37 +64,43 @@ def validate(test_loader, model, criterion, device, apr):
                 recall = round(TP/(TP+FN), 2)
             except:
                 recall = 0
-            print(f"TP {TP}, FP {FP}, TN {TN}, FN {FN}")
             return [losses, accuracy, precision, recall]
     return [losses]
 
-def train_and_eval(model, test_loader, train_loader, epochs, device, apr=True):
+def train_and_eval(model, train_loader, test_loader, epochs, device, apr=True):
     losses = np.zeros((epochs, 2))
     metrics = np.zeros((epochs, 3))
     criterion = nn.BCEWithLogitsLoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     model = model.to(device)
     for epoch in range(epochs):
-        print(f"Epoch {epoch +1} of {epochs}")
         train_loss = train(train_loader, model, criterion, optimizer, device)
         val_loss = validate(test_loader, model, criterion, device, apr)
         losses[epoch,0], losses[epoch,1] = train_loss.item(), val_loss[0].item()
+
         if apr:
             metrics[epoch,0], metrics[epoch,1], metrics[epoch,2] = val_loss[1], val_loss[2], val_loss[3]
-            print(f"Validation - Accuracy {metrics[epoch,0]} Precision {metrics[epoch, 1]} and Recall {metrics[epoch, 2]}")
-        print(f"Training loss {losses[epoch, 0]}, validation loss {losses[epoch,1]}\n")
+
+        if epoch % 5 == 0 or epoch+1 == epochs:
+            print(f"Epoch {epoch + 1} of {epochs}")
+            if apr:
+                print(f"Validation - Accuracy {metrics[epoch,0]} Precision {metrics[epoch, 1]} and Recall {metrics[epoch, 2]}")
+            print(f"Training loss {losses[epoch, 0]}, validation loss {losses[epoch,1]}\n")
+
     return [losses, metrics]
 
-def get_model_performance_metrics(model, images, labels, device, normalize):
+def get_model_performance_metrics(model, images, labels, device, normalize, crop: Optional[float] = None):
     # Copy dataframe due to the use of iterrows
     images_copy = images.copy()
     TP_list, FP_list, TN_list, FN_list = [], [], [], []
     for _, selected in images_copy.iterrows():
         model.eval()
-        image = pdc.read_file(selected['ImagePath'])
-        image = np.expand_dims(image.pixel_array.astype("int16"), axis=(0,1))
+        image = pdc.read_file(selected['ImagePath']).pixel_array
+        if crop is not None:
+            image = crop_image(image, crop)
         if normalize: 
             image = image / np.max(image)
+        image = np.expand_dims(image, axis=(0,1))
         image = torch.tensor(image, dtype=torch.float)
         image = image.to(device)
         actual = labels[(labels['Patient'] == int(selected['Patient'])) & (labels['Slice'] == int(selected['Slice']))]['Label'].item()
@@ -115,15 +117,15 @@ def get_model_performance_metrics(model, images, labels, device, normalize):
             pass
     TP, FP, TN, FN = len(TP_list), len(FP_list), len(TN_list), len(FN_list)
     try:
-        accuracy = round((TP+TN)/(TP+FP+TN+FN),2)
+        accuracy = round((TP+TN)/(TP+FP+TN+FN),4)
     except:
         accuracy = 0
     try:
-        precision = round(TP/(FP+TP), 2)
+        precision = round(TP/(FP+TP), 4)
     except:
         precision = 0
     try: 
-        recall = round(TP/(TP+FN), 2)
+        recall = round(TP/(TP+FN), 4)
     except:
         recall = 0
     print(f"TP: {TP}, FP: {FP}, TN: {TN}, FN: {FN}")

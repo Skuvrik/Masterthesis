@@ -4,6 +4,7 @@ import pydicom as pdc
 import re, random
 import torch, os
 from torch.utils.data import Dataset
+from typing import Optional
 
 # INDEXING
 def getPaths(path):
@@ -62,15 +63,14 @@ def get_list_of_paths(paths, patient):
     return patient_paths
 
 # SPLITTING
-def get_train_test_split_on_patients(data, train_size = 0.8, slice_number=None):
+def get_train_test_split_on_patients(data: pd.DataFrame, seed: int, train_size: float = 0.8, slice_number=None):
     # This needs more consistent datastructures.
-    random.seed(42)
-    patient_num = np.max(data['Patient'])
-    selection = random.sample(list(range(1, patient_num+1)), k = patient_num)
-    train_selection = random.sample(selection, k = int(patient_num*train_size))
+    random.seed(seed)
+    selection = np.unique(data['Patient'])
+    train_selection = random.sample(list(selection), k = int(len(selection)*train_size))
     test_mask = np.isin(selection, train_selection)
     test_selection = np.array(selection)[~test_mask]
-    test_selection = random.sample(list(test_selection), k = patient_num-len(train_selection))
+    test_selection = random.sample(list(test_selection), k = len(selection)-len(train_selection))
 
     test_mask = np.isin(data['Patient'], test_selection)
     train_mask = np.isin(data['Patient'], train_selection)
@@ -153,6 +153,10 @@ def convert_signal(image_array: np.ndarray):
     
     pass
 
+def crop_image(image: np.ndarray, reduction: float = 0.70):
+    y_bottom, y_top = int(image.shape[0]*reduction), int(image.shape[0]*(1-reduction))
+    return image[y_top:y_bottom, y_top:y_bottom]
+
 # DATASETS
 class ImageDataset(Dataset):
     def __init__(self, X_df, y_df):
@@ -170,20 +174,27 @@ class ImageDataset(Dataset):
         return torch.tensor(image, dtype=torch.float), torch.tensor(label, dtype=torch.float)
 
 class SliceIntensityDataset(Dataset):
-    def __init__(self, X_df, y_df):
+
+    def __init__(self, X_df: pd.DataFrame, y_df: pd.DataFrame, normalize: bool = False, crop: Optional[float] = None):
         self.X = X_df
         self.y = y_df
+        self.normalize = normalize
+        self.crop = crop
     
     def __len__(self):
         return(len(self.X))
     
     def __getitem__(self, index):
         selected_X = self.X.iloc[[index]]
-        dcm = pdc.read_file(selected_X["ImagePath"].item())
-        image = dcm.pixel_array.astype('int16')
+        image = pdc.read_file(selected_X["ImagePath"].item()).pixel_array.astype('int16')
+        if self.crop is not None:
+            image = crop_image(image, self.crop)
+        if self.normalize:
+            image = image / np.max(image)
+        image = torch.tensor(image, dtype=torch.float).unsqueeze(0)
         label = self.y[(self.y['Patient'] == int(selected_X['Patient'])) & (self.y['Slice'] == int(selected_X['Slice']))]['Label'].item()
-        image = image / np.max(image)
-        return torch.tensor(image, dtype=torch.float), torch.tensor(label, dtype=torch.float)
+        label = torch.tensor(label, dtype=torch.float)
+        return image, label
 
 # Maybe useful code..
 # train, test = get_train_test_split_on_patients(data, 5, slice_number = 20)
