@@ -7,7 +7,6 @@ import torch
 from utils.datahandling_utils import crop_image
 from typing import Optional
 
-
 def get_model_input(slice: object, device: str, normalize: bool, crop: Optional[float] = None):
     image  = pdc.read_file(slice['ImagePath']).pixel_array
     if crop is not None:
@@ -32,8 +31,10 @@ def display_predictions(sorted_data: list, model: object = None, device: str = N
     rows = np.min(number_array[np.nonzero(number_array)])
     cols = np.count_nonzero(number_array)
     count = 0
-    fig, axs = plt.subplots(rows, cols, figsize=(10, 8))
+    fig, axs = plt.subplots(rows, cols, figsize=(8, 8))
     for i, ax in enumerate(axs):
+        if rows == 1:
+            ax = axs
         if TP > 0:
             if i == 0: 
                 TP_index = count
@@ -46,6 +47,8 @@ def display_predictions(sorted_data: list, model: object = None, device: str = N
                 ax[TP_index].imshow(TP_occlusion.squeeze().cpu().detach().numpy(), cmap='cool', alpha=.5)
             ax[TP_index].grid(False)
             ax[TP_index].axis('off')
+            if rows == 1:
+                ax[TP_index].set_title('True positive')
             
         if FP > 0:
             if i == 0: 
@@ -59,6 +62,8 @@ def display_predictions(sorted_data: list, model: object = None, device: str = N
                 ax[FP_index].imshow(FP_occlusion.squeeze().cpu().detach().numpy(), cmap='cool', alpha=.5)
             ax[FP_index].grid(False)
             ax[FP_index].axis('off')
+            if rows == 1:
+                ax[FP_index].set_title('False positive')
             
         if TN > 0:
             if i == 0: 
@@ -72,6 +77,8 @@ def display_predictions(sorted_data: list, model: object = None, device: str = N
                 ax[TN_index].imshow(TN_occlusion.squeeze().cpu().detach().numpy(), cmap='cool', alpha=.5)
             ax[TN_index].grid(False)
             ax[TN_index].axis('off')
+            if rows == 1:
+                ax[TN_index].set_title('True negative')
             
         if FN > 0:
             if i == 0:
@@ -84,9 +91,11 @@ def display_predictions(sorted_data: list, model: object = None, device: str = N
                 ax[FN_index].imshow(FN_occlusion.squeeze().cpu().detach().numpy(), cmap='cool', alpha=.5)
             ax[FN_index].grid(False)
             ax[FN_index].axis('off')
+            if rows == 1:
+                ax[FN_index].set_title('False negative')
 
-        if i == 0:
-            if TP > 0: ax[TN_index].set_title('True positive')
+        if i == 0 and rows > 1:
+            if TP > 0: ax[TP_index].set_title('True positive')
             if FP > 0: ax[FP_index].set_title('False positive')
             if TN > 0: ax[TN_index].set_title('True negative')
             if FN > 0: ax[FN_index].set_title('False negative')
