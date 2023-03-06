@@ -149,7 +149,7 @@ import pandas as pd
 def signal_to_concentration(S, TR, FA):
     return S/10 - 4.48
 
-def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device: str, crop: float):
+def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device: str, crop: float, one_pred: bool = True):
     model.eval()
     patient = np.unique(data['Patient'])[0]
     volume = int(np.squeeze(intensities[np.where(intensities[:, 0] == patient)[0]])[1])
@@ -168,6 +168,10 @@ def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device:
         image = torch.tensor(image, dtype=torch.float).to(device)
         pred = int(round(torch.sigmoid(model(image)).item()))
         if pred == 1: slice_preds.append(slice_num)
+    if len(slice_preds) > 1 and one_pred:
+        slice_preds = sorted(slice_preds, reverse=True)
+        idx = len(slice_preds) // 2
+        return [slice_preds[idx]], info
     return slice_preds, info
 
 def filter_slices_on_mca_prediction(data, patient_num: int, mca_slices: list) -> dict:
@@ -211,13 +215,15 @@ def get_label_curves(image_data, label_path='AIF_images.xlsx', curve_path='D:\AI
         label_curves[p] = c
     return label_curves
     
-def eval_curves(model, image_data:pd.DataFrame, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, signal_to_concentration: Callable):
+def eval_curves(model, image_data:pd.DataFrame, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, signal_to_concentration: Callable = None, one_pred: bool = True):
     actual_curves = get_label_curves(image_data)
     results = []
+    extractions = {}
+    labels = {}
     for p in actual_curves.keys():
         print(f"Patient {p}")
         images = image_data[image_data['Patient'] == p]
-        MCA_slices, slice_info = get_MCA_prediction(model, images, vol_intensities, device, crop)
+        MCA_slices, slice_info = get_MCA_prediction(model, images, vol_intensities, device, crop, one_pred)
         filtered_slices = filter_slices_on_mca_prediction(image_data, p, MCA_slices)
         pred_curves = extract_AIF_mouridsen(filtered_slices, seed, slice_info, visualize)
         for s in pred_curves.keys():
@@ -225,6 +231,9 @@ def eval_curves(model, image_data:pd.DataFrame, vol_intensities:np.ndarray, devi
                 results.append([p, s, None, None, None])
                 continue
             pred = np.mean(pred_curves[s][0], axis = 0)
-            pred = signal_to_concentration(pred, slice_info['TR'], slice_info['FA'])
+            if signal_to_concentration is not None:
+                pred = signal_to_concentration(pred, slice_info['TR'], slice_info['FA'])
+            extractions[(p,s)] = pred
+            labels[(p,s)] = actual_curves[p]
             results.append([p, s, mae(actual_curves[p], pred), mse(actual_curves[p], pred, squared=False), r2(actual_curves[p], pred)])
-    return pd.DataFrame(results, columns=['Patient', 'Slice', 'MAE', 'MSE', 'R2'], index=None)
+    return pd.DataFrame(results, columns=['Patient', 'Slice', 'MAE', 'RMSE', 'R2'], index=None), extractions, labels
