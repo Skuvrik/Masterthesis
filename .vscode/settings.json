@@ -9,5 +9,7 @@
     ],
     "jupyter.jupyterServerType": "local",
     "python.linting.enabled": false,
-    "cSpell.enabled": false
+    "cSpell.enabled": false,
+    "notebook.formatOnSave.enabled": true,
+    "notebook.output.scrolling": true
 }

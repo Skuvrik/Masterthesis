@@ -67,6 +67,25 @@ def validate(test_loader, model, criterion, device:str, apr: bool = False):
             return [losses, accuracy, precision, recall]
     return [losses]
 
+def predict(loader, model, device:str):
+    predictions = []
+    labels = []
+    model.to(device)
+    model.eval()
+    with torch.no_grad():
+        for (input, target) in loader:
+            target = torch.unsqueeze(target,1)
+            target = target.to(device)
+            input = input.to(device)
+            output = torch.sigmoid(model(input))
+            
+            predictions.extend(output.numpy())
+            labels.extend(target.numpy())
+    predictions = np.array(predictions)
+    labels = np.array(labels)
+    
+    return np.concatenate((predictions, labels), axis=1)
+
 def train_and_eval(model, train_loader, test_loader, optimizer, criterion, epochs, device, apr=True):
     losses = np.zeros((epochs, 2))
     metrics = np.zeros((epochs, 3))
@@ -122,32 +141,18 @@ from models.mouridsen import get_AIF_KMeans
 from utils.datahandling_utils import crop_image
 import os
 import pandas as pd
+import matplotlib.pyplot as plt
 
-# def NLC_signal_to_concentration(S, TR, FA):
-#     FA = FA*(np.pi/180)
-#     r1 = 4.5
-#     T_10 = 1.4
-#     S_0 = np.mean(S[:5])
-#     E_10 = np.exp(-TR/T_10)
-#     B = (1-E_10)/(1-E_10*np.cos(FA))
-#     A = np.nan_to_num(B*S/S_0)
-#     R1 = np.nan_to_num(-1/TR * np.log((1-A)/(1-A*np.cos(FA))))
-#     C = (R1-(1/T_10))/r1
-#     C = C.clip(0)
-#     return C
-
-# def signal_to_concentration(S, TR, FA):
-#     FA = FA*(np.pi/180)
-#     r1 = 4.5
-#     T_10 = 1.4
-#     S_0 = np.mean(S[:5, :, :], axis=0)
-#     A = (1-np.cos(FA)*np.exp(-TR))/(1-np.exp(-TR))
-#     T_1 = np.nan_to_num(-TR/(np.log(A-S/S_0)-np.log(A-(S/S_0)*np.cos(FA))))
-#     C = np.nan_to_num(1/r1*(1/T_1 - 1/T_10))
-#     return C
-
-def signal_to_concentration(S, TR, FA):
-    return S/10 - 4.48
+def NLC_s2r(S, TR, FA):
+    FA = FA*(np.pi/180) # degree -> rad
+    TR = TR / 1000 # ms -> s
+    T_10 = 1.4
+    S_0 = np.mean(S[:5])
+    E_10 = np.exp(-TR/T_10)
+    B = (1-E_10)/(1-E_10*np.cos(FA))
+    A = np.nan_to_num(B*S/S_0)
+    R1 = np.nan_to_num(-1/TR * np.log((1-A)/(1-A*np.cos(FA))))
+    return R1 - np.mean(R1[:5])
 
 def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device: str, crop: float, one_pred: bool = True):
     model.eval()
@@ -159,7 +164,7 @@ def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device:
     for i, (_, slice) in enumerate(slices.iterrows()):
         slice_num = slice['Slice']
         image = pdc.dcmread(slice['ImagePath'])
-        if i == 0:
+        if i == 3:
             info['FA'] = image.FlipAngle
             info['TR'] = image.RepetitionTime
         image = crop_image(image.pixel_array, crop)
@@ -214,26 +219,58 @@ def get_label_curves(image_data, label_path='AIF_images.xlsx', curve_path='D:\AI
         c = get_AIF_label(label_path, curve_path, patient=p)
         label_curves[p] = c
     return label_curves
+
+def pass_through(x):
+    return x
+
+def visualize_curves(curves, curve_coord, patient_slice, TR, FA, signal_to_relaxation):
+    if signal_to_relaxation is None:
+        signal_to_relaxation = pass_through()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8,8))
+    fig.suptitle("Final AIF and voxel-locations")
+    for c in curves:
+        ax1.plot(signal_to_relaxation(c, TR, FA), alpha=0.2)
+    ax1.plot(signal_to_relaxation(np.mean(curves, axis=0), TR, FA), color="red")
+    ax1.set_xlabel("Time[s]")
+    ax1.set_ylabel("Amplitude[a.u.]")
+    ax1.grid()
+
+    ax2.imshow(patient_slice)
+    ax2.axis("off")
+    for i in curve_coord:
+        ax2.plot(i[1], i[0], ".r", markersize=1, linewidth = 0)
+
+def single_eval_curve(model, image_data:pd.DataFrame, patient:int, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, one_pred: bool):
+    images = image_data[image_data['Patient'] == patient]
+    MCA_slices, slice_info = get_MCA_prediction(model, images, vol_intensities, device, crop, one_pred)
+    filtered_slices = filter_slices_on_mca_prediction(images, patient, MCA_slices)
+    pred_curves = extract_AIF_mouridsen(filtered_slices, seed, slice_info, visualize)
+    return pred_curves, slice_info        
     
-def eval_curves(model, image_data:pd.DataFrame, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, signal_to_concentration: Callable = None, one_pred: bool = True):
+def eval_curves(model, image_data:pd.DataFrame, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, signal_to_relaxation: Callable = None, one_pred: bool = True):
     actual_curves = get_label_curves(image_data)
     results = []
     extractions = {}
     labels = {}
     for p in actual_curves.keys():
         print(f"Patient {p}")
-        images = image_data[image_data['Patient'] == p]
-        MCA_slices, slice_info = get_MCA_prediction(model, images, vol_intensities, device, crop, one_pred)
-        filtered_slices = filter_slices_on_mca_prediction(image_data, p, MCA_slices)
-        pred_curves = extract_AIF_mouridsen(filtered_slices, seed, slice_info, visualize)
+        pred_curves, slice_info = single_eval_curve(model, image_data, p, vol_intensities, device, seed, crop, visualize, one_pred)
         for s in pred_curves.keys():
             if actual_curves[p] is None:
                 results.append([p, s, None, None, None])
                 continue
+
+            if visualize:
+                volume = int(np.squeeze(vol_intensities[np.where(vol_intensities[:, 0] == p)[0]])[1])
+                slice = image_data[((image_data['Patient'] == p) & (image_data["Slice"] == s)) & (image_data['Volume'] == volume)]
+                image = pdc.dcmread(slice['ImagePath'].item()).pixel_array
+                visualize_curves(pred_curves[s][0], pred_curves[s][1], image, slice_info['TR'], slice_info['FA'], signal_to_relaxation)
+
             pred = np.mean(pred_curves[s][0], axis = 0)
-            if signal_to_concentration is not None:
-                pred = signal_to_concentration(pred, slice_info['TR'], slice_info['FA'])
+            if signal_to_relaxation is not None:
+                pred = signal_to_relaxation(pred, slice_info['TR'], slice_info['FA'])
             extractions[(p,s)] = pred
             labels[(p,s)] = actual_curves[p]
+
             results.append([p, s, mae(actual_curves[p], pred), mse(actual_curves[p], pred, squared=False), r2(actual_curves[p], pred)])
     return pd.DataFrame(results, columns=['Patient', 'Slice', 'MAE', 'RMSE', 'R2'], index=None), extractions, labels

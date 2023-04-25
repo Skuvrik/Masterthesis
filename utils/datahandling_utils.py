@@ -66,19 +66,52 @@ def get_list_of_paths(paths, patient):
     return patient_paths
 
 # SPLITTING
-def get_train_test_split_on_patients(data: pd.DataFrame, seed: int, train_size: float = 0.8, slice_number=None):
+def split_patients_to_txt(data: pd.DataFrame, seed: int, distribution: tuple = (80, 10, 10)):
+    if np.sum(distribution) != 100: raise Exception(f"The distribution {distribution} does not sum to 100%!")
+    train_size, val_size, test_size = distribution[0]/100, distribution[1]/100, distribution[2]/100
     np.random.seed(seed)
-    selection = np.unique(data['Patient'])
-    train_selection = np.random.choice(selection, size = int(len(selection)*train_size), replace=False)
-    test_selection = selection[~np.isin(selection, train_selection)]
-    test_mask = np.isin(data['Patient'], test_selection)
-    train_mask = np.isin(data['Patient'], train_selection)
-    train = data[train_mask]
-    test = data[test_mask]
-    if slice_number is not None:
-        train = train.loc[train['Slice'] == slice_number]
-        test = test.loc[test['Slice'] == slice_number]
-    return train, test
+    patients = np.unique(data['Patient'])
+    train_selection = np.random.choice(patients, size = int(len(patients)*train_size), replace=False)
+    patients = patients[~np.isin(patients, train_selection)]
+    val_selection = np.random.choice(patients, size = int(len(patients)*(val_size/(val_size+test_size))), replace=False)
+    test_selection = patients[~np.isin(patients, val_selection)]
+    with open('train_patients.txt', 'w') as f:
+        for i, line in enumerate(train_selection):
+            if i != len(train_selection)-1:
+                f.write(f"{line},")
+            else:
+                f.write(f"{line}")
+    with open('val_patients.txt', 'w') as f:
+        for i, line in enumerate(val_selection):
+            if i != len(val_selection)-1:
+                f.write(f"{line},")
+            else:
+                f.write(f"{line}")
+    with open('test_patients.txt', 'w') as f:
+        for i, line in enumerate(test_selection):
+            if i != len(test_selection)-1:
+                f.write(f"{line},")
+            else:
+                f.write(f"{line}")
+
+def get_patients_from_txt(paths = {"train" : "train_patients.txt", "val" : "val_patients.txt", "test" : "test_patients.txt"}):
+    patients = {}
+    for name in paths.keys():
+        array = np.loadtxt(paths.get(name), dtype=int, delimiter=",", unpack=False)
+        patients[name] = array
+    return patients
+
+def sort_imagedata_on_patients(data: pd.DataFrame, patient_distribution: dict):
+    train_patients = patient_distribution.get("train")
+    val_patients = patient_distribution.get("val")
+    test_patients = patient_distribution.get("test")
+
+    train_mask = np.isin(data["Patient"], train_patients)
+    val_mask = np.isin(data["Patient"], val_patients)
+    test_mask = np.isin(data["Patient"], test_patients)
+
+    return data[train_mask], data[val_mask], data[test_mask]
+
 
 def get_slice_volumes_for_one_patient(data:pd.DataFrame, patient:int, slice_number:int):
     slices = data.loc[(data['Patient'] == patient) & (data['Slice'] == slice_number)]
@@ -162,7 +195,7 @@ def filter_on_intensity_and_add_data(image_data:pd.DataFrame, labels:pd.DataFram
         copy_data = copy_data.drop(copy_data[copy_data['Patient'] == int(patient)].index.intersection(copy_data[copy_data['Volume'] != int(volume_index)].index))
         original_count -= before - len(copy_data)
 
-        if extra_vols + volume_index < 48:
+        if extra_vols + volume_index < 80:
             copy_data, count = add_extra_volumes(image_data, labels, copy_data, extra_vols, patient, volume_index)
             extra_count += count
     if extra_vols > 0:
@@ -173,25 +206,32 @@ def crop_image(image: np.ndarray, reduction: float = 0.70):
     y_bottom, y_top = int(image.shape[0]*reduction), int(image.shape[0]*(1-reduction))
     return image[y_top:y_bottom, y_top:y_bottom]
 
-def load_and_prepare_images(image_data:pd.DataFrame, labels:pd.DataFrame, vol_intensities:np.ndarray, SEED:int, extra_vols:int = 0, permute:bool = False, train_size:float=0.9):
+def load_and_prepare_images_from_txt(image_data:pd.DataFrame, labels:pd.DataFrame, vol_intensities:np.ndarray, SEED:int, extra_vols:int = 0, permute:bool = False):
+    
     copy_data = filter_on_intensity_and_add_data(image_data, labels, vol_intensities, extra_vols)
-    train_val_images, test_images = get_train_test_split_on_patients(copy_data, SEED, train_size=train_size)
+    dist = get_patients_from_txt()
+    train_images, val_images, test_images = sort_imagedata_on_patients(copy_data, dist)
 
-    train_val_labels = np.isin(labels['Patient'], np.unique(train_val_images['Patient']))
-    train_val_labels = labels[train_val_labels]
+    train_labels = np.isin(labels['Patient'], np.unique(train_images['Patient']))
+    train_labels = labels[train_labels]
+    val_labels = np.isin(labels['Patient'], np.unique(val_images['Patient']))
+    val_labels = labels[val_labels]
     test_labels = np.isin(labels['Patient'], np.unique(test_images['Patient']))
     test_labels = labels[test_labels]
 
     if permute:
-        train_val_labels['Label'] = train_val_labels['Label'].sample(frac=1, random_state=SEED).values
+        train_labels['Label'] = train_labels['Label'].sample(frac=1, random_state=SEED).values
     
-    label_train_true_size, label_train_size = len(train_val_labels[train_val_labels['Label'] == 1]) + len(train_val_images) - len(train_val_labels), len(train_val_images)
+    label_train_true_size, label_train_size = len(train_labels[train_labels['Label'] == 1]) + len(train_images) - len(train_labels), len(train_images)
+    label_val_true_size, label_val_size = len(val_labels[val_labels['Label'] == 1]) + len(val_images)  - len(val_labels), len(val_images)
     label_test_true_size, label_test_size = len(test_labels[test_labels['Label'] == 1]) + len(test_images) - len(test_labels), len(test_images)
-    print(f"Size training data: {len(train_val_images)}. Size test_data: {len(test_images)}.")
-    print(f"True labels in training: {label_train_true_size} of {label_train_size} ({round(label_train_true_size/label_train_size, 3)*100}%).")
-    print(f"True labels in test: {label_test_true_size} of {label_test_size} ({round(label_test_true_size/label_test_size, 3)*100}%)")
+    print(f"Size training, val, and test data: {len(train_images)}, {len(val_images)}, {len(test_images)}.")
+    print(f"True labels in training: {label_train_true_size} of {label_train_size} ({round(label_train_true_size/label_train_size, 3)*100:.1f}%).")
+    print(f"True labels in validation: {label_val_true_size} of {label_val_size} ({round(label_val_true_size/label_val_size, 3)*100:.1f}%).")
+    print(f"True labels in test: {label_test_true_size} of {label_test_size} ({round(label_test_true_size/label_test_size, 3)*100:.1f}%).")
 
-    return train_val_images, test_images, train_val_labels, test_labels
+    return train_images, val_images, test_images, train_labels, val_labels, test_labels
+
 
 # DATASETS
 class ImageDataset(Dataset):
@@ -231,10 +271,3 @@ class SliceIntensityDataset(Dataset):
         label = self.y[(self.y['Patient'] == int(selected_X['Patient'])) & (self.y['Slice'] == int(selected_X['Slice']))]['Label'].item()
         label = torch.tensor(label, dtype=torch.float)
         return image, label
-
-# Maybe useful code..
-# train, test = get_train_test_split_on_patients(data, 5, slice_number = 20)
-# print(f"Train size: {train.size} Test size: {test.size}")
-# train_data, test_data = ImageDataset(train, np.zeros(len(train))), ImageDataset(test, np.zeros(len(test)))
-# train_loader = DataLoader(train_data, batch_size = BATCH_SIZE, pin_memory=False)
-# test_loader = DataLoader(test_data, batch_size=BATCH_SIZE, pin_memory = False)
