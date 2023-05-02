@@ -56,6 +56,7 @@ def display_predictions(sorted_data: list, model: object = None, device: str = N
                 count+=1
             FP_slice = rnd.choice(sorted_data[1])
             FP_image = get_model_input(FP_slice, device, normalize, crop)
+            print(f"FP: {i} {FP_slice['ImagePath']}")
             ax[FP_index].imshow(FP_image.squeeze().cpu().detach().numpy(), cmap='gray')
             if occlude:
                 FP_occlusion = analyze_occlusion(FP_image, model) 

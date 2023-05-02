@@ -3,8 +3,9 @@ import pandas as pd
 import pydicom as pdc
 import re, random
 import torch, os
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from typing import Optional, List
+from tqdm.notebook import tqdm
 
 # INDEXING
 def getPaths(path: str):
@@ -23,27 +24,68 @@ def getPaths(path: str):
         return paths, dir_list
     return paths, dir_list[0]
 
+def get_header_values(dcm_path):
+    dcm = pdc.read_file(dcm_path)
+    h_values = {"SeriesDate" : 0, "Volume" : 0, "SliceLocation" : 0}
+    try:
+        i_slice = int(dcm[0x2001100a].value)
+    except:
+        try:
+            i_slice = float(dcm.SliceLocation)
+        except:
+            i_slice = 0
+            print("Did not find a SliceLocation value in the header. Setting to 0.")
+    finally:
+        h_values['SliceLocation'] = i_slice
+    try:
+        i_volume = int(dcm.TemporalPositionIdentifier)
+    except:
+        try:
+            i_volume = int(dcm.AcquisitionNumber)
+        except:
+            i_volume = 0
+            print("Did not find a Volume index. Setting to 0.")
+    finally:
+        h_values['Volume'] = i_volume
+    try:
+        i_series = dcm.StudyDate
+    except:
+        i_series = 0
+        print("Did not find a SeriesDate. Setting to 0.")
+    finally:
+        h_values['SeriesDate'] = i_series
+
+    return h_values
+
 def createImageIndexCSV(path:str, force=False, result_file_path = "data_indices.csv"):
     if os.path.isfile(result_file_path) and not force:
         return pd.read_csv(result_file_path, delimiter=',', index_col=0)
     result_frame = []
     paths, dirs = getPaths(path)
-    for patient in dirs:
-        patient_data = []
-        slice_positions = []
-        patient_paths = get_list_of_paths(paths, patient)
-        for image_path in patient_paths:
-            try:
-                dcm = pdc.read_file(image_path)
-                patient_data.append([patient, int(dcm.AcquisitionNumber), dcm.SliceLocation, image_path])
-                slice_positions.append(dcm.SliceLocation)
-            except:
-                continue
-        slice_positions = np.unique(np.array(slice_positions))
-        for data in patient_data:
-            slice_num = np.where(slice_positions == data[2])
-            result_frame.append([data[0], data[1], int(slice_num[0]) + 1, data[3]])
-    df = pd.DataFrame(result_frame, columns= ["Patient", "Volume", "Slice", "ImagePath"])
+    with tqdm(total=len(dirs)) as pas_bar:
+        for patient in dirs:
+            pas_bar.update(1)
+            patient_data = []
+            slice_positions = []
+            series_dates = []
+            patient_paths = get_list_of_paths(paths, patient)
+            for image_path in patient_paths:
+                try:
+                    h_values = get_header_values(image_path)
+                    patient_data.append([patient, h_values['SeriesDate'], h_values['Volume'], h_values['SliceLocation'], image_path])
+                    slice_positions.append(h_values['SliceLocation'])
+                    series_dates.append(h_values['SeriesDate'])
+                except:
+                    continue
+            slice_positions = np.unique(np.array(slice_positions))
+            series_dates = np.unique(np.array(series_dates))
+            if len(series_dates) <= 1: print(f"{patient} no date series")
+            if len(slice_positions) <= 1: print(f"{patient} slice meddeling")
+            for data in patient_data:
+                slice_num = np.where(slice_positions == data[3])
+                date_num = np.where(series_dates == data[1])
+                result_frame.append([data[0], int(date_num[0]) + 1, data[2], int(slice_num[0]) + 1, data[4]])
+    df = pd.DataFrame(result_frame, columns= ["Patient", "Series", "Volume", "Slice", "ImagePath"])
     df.to_csv(result_file_path)
     return df
 
@@ -71,7 +113,7 @@ def split_patients_to_txt(data: pd.DataFrame, seed: int, distribution: tuple = (
     train_size, val_size, test_size = distribution[0]/100, distribution[1]/100, distribution[2]/100
     np.random.seed(seed)
     patients = np.unique(data['Patient'])
-    train_selection = np.random.choice(patients, size = int(len(patients)*train_size), replace=False)
+    train_selection = np.random.choice(patients, size = int(round(len(patients)*train_size, 0)), replace=False)
     patients = patients[~np.isin(patients, train_selection)]
     val_selection = np.random.choice(patients, size = int(len(patients)*(val_size/(val_size+test_size))), replace=False)
     test_selection = patients[~np.isin(patients, val_selection)]
@@ -159,27 +201,36 @@ def get_max_intensity_volume_index(array: np.ndarray):
         slopes[i] = vol_intensities[i+1] - vol_intensities[i]
     return np.argmax(slopes) +1
 
-def get_max_intensity_for_dataset(data: pd.DataFrame, force = False):
+def get_max_intensity_for_dataset(data: pd.DataFrame, path = 'intensities.csv', force = False):
     patients = np.unique(data['Patient'])
-    path = 'volume_intensities.csv'
     if os.path.isfile(path) and not force:
         intensities = np.genfromtxt(path, delimiter=',')
         if np.in1d(patients, intensities[:,0]).all():
             return intensities
-    intensities = np.zeros((len(patients), 2))
-    for i, patient in enumerate(patients):
-        paths = data.loc[(data['Patient'] == patient)]
-        image_array = createImageArray(paths)
-        intensities[i, 0] = patient
-        intensities[i, 1] = get_max_intensity_volume_index(image_array)
+    intensities = []
+    for patient in patients:
+        series = np.unique(data[data['Patient'] == patient]['Series'])
+        intensity = np.zeros((len(series), 3))
+        for i, s in enumerate(series):
+            paths = data.loc[(data['Patient'] == patient) & (data['Series'] == s)]
+            image_array = createImageArray(paths)
+            intensity[i, 0], intensity[i, 1] = patient, s
+            intensity[i, 2] = get_max_intensity_volume_index(image_array)
+        intensity = intensities.extend(intensity)
+    intensities = np.array(intensities)
     np.savetxt(path, intensities, delimiter=',')
     return intensities
 
-def add_extra_volumes(image_data:pd.DataFrame, labels:pd.DataFrame, copy_data:pd.DataFrame, extra_vols:int, patient:int, volume_index:int):
+def add_extra_volumes(image_data:pd.DataFrame, labels:pd.DataFrame, copy_data:pd.DataFrame, extra_vols:int, patient:int, series_index:int, volume_index:int):
     # Adds extra volumes of positively labeled slices
     extra_count = 0
     for i in range(int(volume_index)+1, extra_vols+int(volume_index)+1):
-        extra_data = image_data[(image_data['Patient']== patient) & (image_data['Slice'].isin(labels[(labels['Patient'] == patient) & (labels['Label'] == 1)]['Slice']))]
+        extra_data = image_data[((image_data['Patient'] == patient) & (
+            image_data['Series'] == series_index)) & (
+            image_data['Slice'].isin(labels[(labels['Patient'] == patient) & ((
+            labels['Series'] == series_index) & (
+            labels['Label'] == 1))]['Slice']))]
+        
         extra_count += len(extra_data[extra_data['Volume'] == i])
         copy_data = pd.concat([copy_data, extra_data[extra_data['Volume'] == i]])
     return copy_data, extra_count
@@ -190,27 +241,32 @@ def filter_on_intensity_and_add_data(image_data:pd.DataFrame, labels:pd.DataFram
     extra_count = 0
     patient_filter = np.isin(vol_intensities[:,0], np.unique(copy_data['Patient']))
     vol_intensities = vol_intensities[patient_filter]
-    for patient, volume_index in zip(vol_intensities[:, 0], vol_intensities[:, 1]):
+    for patient, series_index, volume_index in zip(vol_intensities[:, 0], vol_intensities[:, 1], vol_intensities[:, 2]):
         before = len(copy_data)
-        copy_data = copy_data.drop(copy_data[copy_data['Patient'] == int(patient)].index.intersection(copy_data[copy_data['Volume'] != int(volume_index)].index))
+        copy_data = copy_data.drop(copy_data[(copy_data['Patient'] == int(patient))].index.intersection(
+            copy_data[copy_data['Series'] == int(series_index)].index).intersection(
+            copy_data[copy_data['Volume'] != int(volume_index)].index))
         original_count -= before - len(copy_data)
 
         if extra_vols + volume_index < 80:
-            copy_data, count = add_extra_volumes(image_data, labels, copy_data, extra_vols, patient, volume_index)
+            copy_data, count = add_extra_volumes(image_data, labels, copy_data, extra_vols, patient, series_index, volume_index)
             extra_count += count
     if extra_vols > 0:
         print(f"Added data {extra_count}. Original amount of data {original_count}")
+        
     return copy_data
 
 def crop_image(image: np.ndarray, reduction: float = 0.70):
+    if len(image.shape) > 2:
+        y_bottom, y_top = int(image.shape[1]*reduction), int(image.shape[1]*(1-reduction))
+        return image[:, y_top:y_bottom, y_top:y_bottom]
     y_bottom, y_top = int(image.shape[0]*reduction), int(image.shape[0]*(1-reduction))
     return image[y_top:y_bottom, y_top:y_bottom]
 
-def load_and_prepare_images_from_txt(image_data:pd.DataFrame, labels:pd.DataFrame, vol_intensities:np.ndarray, SEED:int, extra_vols:int = 0, permute:bool = False):
+def load_and_prepare_images_from_txt(file_locs, image_data:pd.DataFrame, labels:pd.DataFrame, vol_intensities:np.ndarray, SEED:int, extra_vols:int = 0, permute:bool = False):
+    dist = get_patients_from_txt(file_locs)
+    train_images, val_images, test_images = sort_imagedata_on_patients(image_data, dist)
     
-    copy_data = filter_on_intensity_and_add_data(image_data, labels, vol_intensities, extra_vols)
-    dist = get_patients_from_txt()
-    train_images, val_images, test_images = sort_imagedata_on_patients(copy_data, dist)
 
     train_labels = np.isin(labels['Patient'], np.unique(train_images['Patient']))
     train_labels = labels[train_labels]
@@ -219,12 +275,17 @@ def load_and_prepare_images_from_txt(image_data:pd.DataFrame, labels:pd.DataFram
     test_labels = np.isin(labels['Patient'], np.unique(test_images['Patient']))
     test_labels = labels[test_labels]
 
+    train_images = filter_on_intensity_and_add_data(train_images, train_labels, vol_intensities, extra_vols)
+    val_images = filter_on_intensity_and_add_data(val_images, val_labels, vol_intensities, 0)
+    test_images = filter_on_intensity_and_add_data(test_images, test_labels, vol_intensities, 0)
+
     if permute:
         train_labels['Label'] = train_labels['Label'].sample(frac=1, random_state=SEED).values
     
     label_train_true_size, label_train_size = len(train_labels[train_labels['Label'] == 1]) + len(train_images) - len(train_labels), len(train_images)
-    label_val_true_size, label_val_size = len(val_labels[val_labels['Label'] == 1]) + len(val_images)  - len(val_labels), len(val_images)
-    label_test_true_size, label_test_size = len(test_labels[test_labels['Label'] == 1]) + len(test_images) - len(test_labels), len(test_images)
+    label_val_true_size, label_val_size = len(val_labels[val_labels['Label'] == 1]), len(val_images)
+    label_test_true_size, label_test_size = len(test_labels[test_labels['Label'] == 1]), len(test_images)
+
     print(f"Size training, val, and test data: {len(train_images)}, {len(val_images)}, {len(test_images)}.")
     print(f"True labels in training: {label_train_true_size} of {label_train_size} ({round(label_train_true_size/label_train_size, 3)*100:.1f}%).")
     print(f"True labels in validation: {label_val_true_size} of {label_val_size} ({round(label_val_true_size/label_val_size, 3)*100:.1f}%).")
@@ -234,6 +295,59 @@ def load_and_prepare_images_from_txt(image_data:pd.DataFrame, labels:pd.DataFram
 
 
 # DATASETS
+class EqualLengthsBatchSampler(Sampler):
+    """
+    Custom sampler to deal with images of varying dimensions. 
+    Clusters images to batches according to their image dimensions. 
+    """
+
+    def __init__(self, batch_size, inputs, force=False):
+
+        # Remember batch size and number of samples
+        self.batch_size, self.num_samples = batch_size, len(inputs)
+
+        self.unique_lengths = set()
+        self.dim_to_samples = {}
+
+        for i, selected in inputs.iterrows():
+            image_dim = pdc.read_file(
+                selected["ImagePath"]).pixel_array.astype('int16')
+            image_dim = image_dim.shape[1]
+            self.unique_lengths.add(image_dim)
+
+            if image_dim in self.dim_to_samples:
+                self.dim_to_samples[image_dim].append(i)
+            else:
+                self.dim_to_samples[image_dim] = [i]
+        # Convert set of unique length pairs to a list so we can shuffle it later
+        self.unique_lengths = list(self.unique_lengths)
+
+    def __len__(self):
+        return self.num_samples
+
+    def __iter__(self):
+
+        # Shuffle list of unique length pairs
+        np.random.shuffle(self.unique_lengths)
+
+        # Iterate over all possible sentence length pairs
+        for length in self.unique_lengths:
+
+            # Get indices of all samples for the current length pairs
+            # for example, all indices with a lenght pair of (8,7)
+            indices = self.dim_to_samples[length]
+            indices = np.array(indices)
+
+            # Shuffle array of sequence indices
+            np.random.shuffle(indices)
+
+            # Compute the number of batches
+            num_batches = np.ceil(len(indices) / self.batch_size)
+
+            # Loop over all possible batches
+            for batch_indices in np.array_split(indices, num_batches):
+                yield np.asarray(batch_indices)
+
 class ImageDataset(Dataset):
     def __init__(self, X_df, y_df):
         self.X = X_df
@@ -261,13 +375,15 @@ class SliceIntensityDataset(Dataset):
         return(len(self.X))
     
     def __getitem__(self, index:int):
-        selected_X = self.X.iloc[[index]]
+        selected_X = self.X.loc[[index]]
         image = pdc.read_file(selected_X["ImagePath"].item()).pixel_array.astype('int16')
         if self.crop is not None:
             image = crop_image(image, self.crop)
         if self.normalize:
             image = image / np.max(image)
         image = torch.tensor(image, dtype=torch.float).unsqueeze(0)
-        label = self.y[(self.y['Patient'] == int(selected_X['Patient'])) & (self.y['Slice'] == int(selected_X['Slice']))]['Label'].item()
+        label = self.y[(self.y['Patient'] == int(selected_X['Patient'])) & (
+            self.y['Slice'] == int(selected_X['Slice'])) & (
+            self.y['Series'] == int(selected_X['Series']))]['Label'].item()
         label = torch.tensor(label, dtype=torch.float)
         return image, label

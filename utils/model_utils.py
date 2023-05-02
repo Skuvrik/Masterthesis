@@ -115,12 +115,14 @@ def get_model_performance_metrics(model, images, labels, device, normalize, crop
         image = pdc.read_file(selected['ImagePath']).pixel_array
         if crop is not None:
             image = crop_image(image, crop)
-        if normalize: 
+        if normalize:
             image = image / np.max(image)
-        image = np.expand_dims(image, axis=(0,1))
+        image = np.expand_dims(image, axis=(0, 1))
         image = torch.tensor(image, dtype=torch.float)
         image = image.to(device)
-        actual = labels[(labels['Patient'] == int(selected['Patient'])) & (labels['Slice'] == int(selected['Slice']))]['Label'].item()
+        actual = labels[(labels['Patient'] == int(selected['Patient'])) & ((
+            labels['Slice'] == int(selected['Slice'])) & (
+            labels['Series'] == int(selected['Series'])))]['Label'].item()
         predicted = int(round(torch.sigmoid(model(image)).item()))
         if predicted == 1 and actual == 1:
             TP_list.append(selected)

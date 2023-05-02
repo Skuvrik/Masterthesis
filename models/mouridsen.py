@@ -107,10 +107,11 @@ def plot_filtered_curves(volume: np.ndarray, filter: np.ndarray):
 
 def kMeans_on_curves(next_curves: List[np.ndarray], seed: int, visualize: bool, min_voxels, clusters=5):
     os.environ["OMP_NUM_THREADS"] = '1'
+    length = len(next_curves[0])
     for _ in range(2):
         kMeans_clustering = KMeans(
             n_clusters=clusters, random_state=seed, n_init=10).fit(next_curves)
-        cluster_averaged_curves = np.zeros((clusters, 80))
+        cluster_averaged_curves = np.zeros((clusters, length))
         mapped_curves = {n: [] for n in range(clusters)}
         for i, curve in zip(kMeans_clustering.labels_, next_curves):
             cluster_averaged_curves[i] += curve

@@ -23,7 +23,7 @@ def get_image_stats(data, exclusions=None):
                                         "ContrastBolusAgent",
                                         "ContrastBolusVolume",
                                         "Manufacturer",
-                                        "MAnufacturerModelName"])
+                                        "ManufacturerModelName"])
     for patient in np.unique(data['Patient']):
         if exclusions != None:
             if patient in exclusions: continue
