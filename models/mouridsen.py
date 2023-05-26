@@ -19,7 +19,7 @@ def filter_AUC(volume: np.ndarray, frac=0.9):
 def standardize_curves_on_area(volume: np.ndarray, areas: np.ndarray):
     areas_stacked = np.dstack([areas]*volume.shape[0])
     areas_stacked = np.transpose(areas_stacked, (2, 0, 1))
-    standardized_curves = volume/areas_stacked
+    standardized_curves = np.nan_to_num(volume/areas_stacked)
     return standardized_curves
 
 def get_curve_map(volume: np.ndarray):
@@ -31,9 +31,10 @@ def get_curve_map(volume: np.ndarray):
     return locations_dict
 
 def roughness(X):
-    gradient_2 = np.gradient(np.gradient(X))
-    area = np.trapz(gradient_2**2, dx=1)
-    return area
+    gradient = X[1:] - X[:-1]
+    gradient2 = gradient[1:] - gradient[:-1]
+    roughness = np.sum((gradient2*gradient2)**2)
+    return roughness
 
 def filter_std_curves_roughness(slices: np.ndarray, auc_filter: np.ndarray, frac=0.25):
     curve_roughness = np.zeros((slices.shape[1], slices.shape[2]))
@@ -55,12 +56,21 @@ def select_curves_on_filter(volume: np.ndarray, selection_filter: np.ndarray):
                 next_curves.append(volume[:, row, col])
     return next_curves
 
-def select_highest_peak(curves: List[np.ndarray]) -> int:
-    curve_max = np.argmax(curves, axis=1)
-    value_max = np.zeros(curve_max.shape)
-    for i in range(0, curves.shape[0]):
-        value_max[i] = np.max(curves[i, :])
-    idx = np.argmax(value_max)
+def get_FWHM(x: np.ndarray, y: np.ndarray, height: float = 0.5) -> float:
+    height_half_max = np.max(y) * height
+    index_max = np.argmax(y)
+    x_low = np.interp(height_half_max, y[:index_max+1], x[:index_max+1])
+    x_high = np.interp(height_half_max, np.flip(y[index_max:]), np.flip(x[index_max:]))
+
+    return x_high - x_low
+
+def FWHM_TTP_PV_select(curves):
+    FWHM = np.zeros(curves.shape[0])
+    PV = np.max(curves, axis=1)
+    TTP = np.argmax(curves, axis=1)
+    for i, c in enumerate(curves):
+        FWHM[i] = get_FWHM(list(range(0,len(c))), c)
+    idx = np.argmax(PV / TTP*FWHM)
     return idx
 
 def select_first_and_highest_peak(curves: List[np.ndarray]) -> int:
@@ -88,13 +98,13 @@ def select_curve_lowest_moment(curves: List[np.ndarray]) -> int:
     x_range = np.tile(
         np.arange(start=0, stop=curves.shape[1]), (curves.shape[0], 1))
     x_minus_ttp = x_range - curve_TTP
-    first_moment = np.trapz(curves*x_minus_ttp, axis=1)
+    first_moment = np.sum(curves*x_minus_ttp, axis=1)
     idx = np.argmin(first_moment)
     return idx
 
 def select_height_divided_by_AUC(curves: List[np.ndarray]) -> int:
     curve_peak = np.max(curves, axis=1)
-    AUC = np.trapz(curves, axis=1)
+    AUC = np.sum(curves, axis=1)
     idx = np.argmax(curve_peak / AUC)
     return idx
 
@@ -142,12 +152,10 @@ def _get_AIF_KMeans_single(volume, seed, visualize, min_voxels):
     standardized_curves = standardize_curves_on_area(volume, areas)
     # Map curves to their coordinate to view where the final AIF is extracted from
     curve_map = get_curve_map(standardized_curves)
-    # TODO: The roughness filter has not been implemented.
-    # AUC of double derivative squared, only checking for the tail of the curve
     # Filter out 25% of the most irregular curves
-    # rough_auc_filter = filter_std_curves_roughness(standardized_curves, auc_filter)
+    rough_auc_filter = filter_std_curves_roughness(standardized_curves, auc_filter)
     # Get the standardized curves with the highest AUCs
-    filtered_curves = select_curves_on_filter(standardized_curves, auc_filter)
+    filtered_curves = select_curves_on_filter(standardized_curves, rough_auc_filter)
     # Perform KMeans to find the best curve
     return kMeans_on_curves(filtered_curves, seed, visualize, min_voxels), curve_map
 

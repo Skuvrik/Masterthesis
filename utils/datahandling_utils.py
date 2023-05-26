@@ -181,6 +181,36 @@ def create_cross_val_splits(image_data: pd.DataFrame, SEED:int, num_splits:int=5
     return clusters
 
 # PREPROCESSING
+def get_image_volume(image_data, patient, series, slice_idx):
+    image_paths = image_data[(image_data['Patient'] == patient) &
+                             (image_data['Series'] == series)]
+    slice_filter = np.isin(image_paths['Slice'], slice_idx)
+    image_paths = image_paths[slice_filter]
+    return image_paths
+
+def create_image_array(paths, crop=None):
+    base_slice = pdc.read_file(paths.iloc[[0]]['ImagePath'].item())
+    if crop is not None:
+        base_slice = crop_image(base_slice.pixel_array, crop)
+    else:
+        base_slice = base_slice.pixel_array
+    slice_idxs = np.unique(paths['Slice'])
+    volume_idxs = np.unique(paths['Volume'])
+    slices = np.zeros((len(volume_idxs), len(slice_idxs),
+                      base_slice.shape[0], base_slice.shape[1]))
+
+    for v_i, volume_num in enumerate(volume_idxs):
+        for s_i, slice_num in enumerate(slice_idxs):
+            path = paths[(paths['Volume'] == volume_num)
+                         & (paths['Slice'] == slice_num)]
+            image = pdc.read_file(path['ImagePath'].item())
+            if crop is not None:
+                image = crop_image(image.pixel_array, crop)
+            else:
+                image = image.pixel_array
+            slices[v_i-1, s_i-1, :, :] = image
+    return slices
+
 def createImageArray(paths: List[str]):
     base_slice = pdc.read_file(paths.iloc[[0]]['ImagePath'].item())
     base_slice = base_slice.pixel_array
@@ -293,6 +323,24 @@ def load_and_prepare_images_from_txt(file_locs, image_data:pd.DataFrame, labels:
 
     return train_images, val_images, test_images, train_labels, val_labels, test_labels
 
+def combine_datasets(df1_images, df2_images, df1_labels, df2_labels, path):
+    highest_pas = max(np.unique(df1_images['Patient']))
+    pas_length = len(np.unique(df2_images['Patient']))
+
+    for old, new in zip(np.unique(df2_images['Patient']), range(highest_pas + 1, pas_length + highest_pas + 1)):
+        df2_images.loc[df2_images['Patient']
+                            == old, 'Patient'] = new
+        df2_labels.loc[df2_labels['Patient']
+                            == old, 'Patient'] = new
+
+    combined_images = pd.concat((df1_images, df2_images))
+    combined_labels = pd.concat((df1_labels, df2_labels))
+
+    combined_images = combined_images.reset_index(drop=True)
+    combined_labels = combined_labels.reset_index(drop=True)
+
+    combined_images.to_csv(f'./data/combined_{path}_images.csv')
+    combined_labels.to_csv(f'./data/combined_{path}_labels.csv')
 
 # DATASETS
 class EqualLengthsBatchSampler(Sampler):

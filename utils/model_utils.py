@@ -1,9 +1,12 @@
+from operator import itemgetter
 import torch
 from torch import nn
 import numpy as np
 import pydicom as pdc
-from typing import Optional, Callable
-from utils.datahandling_utils import crop_image
+from typing import Optional, Callable, List
+from models.mouridsen_new import mouridsen2006
+from utils.datahandling_utils import create_image_array, crop_image, get_image_volume
+from utils.signal_conversion import pass_through
 
 def train(train_loader, model, criterion, optimizer, device:str):
     losses = 0
@@ -145,22 +148,14 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def NLC_s2r(S, TR, FA):
-    FA = FA*(np.pi/180) # degree -> rad
-    TR = TR / 1000 # ms -> s
-    T_10 = 1.4
-    S_0 = np.mean(S[:5])
-    E_10 = np.exp(-TR/T_10)
-    B = (1-E_10)/(1-E_10*np.cos(FA))
-    A = np.nan_to_num(B*S/S_0)
-    R1 = np.nan_to_num(-1/TR * np.log((1-A)/(1-A*np.cos(FA))))
-    return R1 - np.mean(R1[:5])
-
-def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device: str, crop: float, one_pred: bool = True):
+def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device: str, crop: float, pred_type: str):
     model.eval()
     patient = np.unique(data['Patient'])[0]
-    volume = int(np.squeeze(intensities[np.where(intensities[:, 0] == patient)[0]])[1])
-    slices = data.loc[(data['Patient']==patient) & (data['Volume']==volume)].copy()
+    series_idx = np.unique(data['Series'])[0]
+    volume = int(np.squeeze(intensities[np.where(
+        (intensities[:, 0] == patient) & (intensities[:, 1] == series_idx))[0]])[2])
+    slices = data.loc[(data['Patient'] == patient) &
+                      (data['Volume'] == volume)].copy()
     slice_preds = []
     info = {}
     for i, (_, slice) in enumerate(slices.iterrows()):
@@ -169,27 +164,34 @@ def get_MCA_prediction(model, data: pd.DataFrame, intensities: np.array, device:
         if i == 3:
             info['FA'] = image.FlipAngle
             info['TR'] = image.RepetitionTime
+            info['TD'] = image.EchoTime
         image = crop_image(image.pixel_array, crop)
         image = image/np.max(image)
-        image = np.expand_dims(image, axis=(0,1))
+        image = np.expand_dims(image, axis=(0, 1))
         image = torch.tensor(image, dtype=torch.float).to(device)
-        pred = int(round(torch.sigmoid(model(image)).item()))
-        if pred == 1: slice_preds.append(slice_num)
-    if len(slice_preds) > 1 and one_pred:
-        slice_preds = sorted(slice_preds, reverse=True)
+        pred = torch.sigmoid(model(image)).item()
+        if pred >= 0.5:
+            slice_preds.append((slice_num, pred))
+    if pred_type == "single":
+        slice_preds = sorted(slice_preds, key=itemgetter(0), reverse=True)
         idx = len(slice_preds) // 2
-        return [slice_preds[idx]], info
-    return slice_preds, info
+        return [slice_preds[idx][0]], info
+    elif pred_type == "sigmoid":
+        slice_preds = sorted(slice_preds, key=itemgetter(1), reverse=True)
+        return [slice_preds[0][0]], info
+    return [i[0] for i in slice_preds], info
 
-def filter_slices_on_mca_prediction(data, patient_num: int, mca_slices: list) -> dict:
+def filter_slices_on_mca_prediction(data, patient_num: int, mca_slices: list, crop=1) -> dict:
     images = {}
     for slice_idx in mca_slices:
-        slice_paths = data[(data['Patient']==patient_num)&(data['Slice']==slice_idx)]
-        slice_paths = slice_paths.sort_values(['Patient', 'Volume', 'Slice'], ignore_index=True)
+        slice_paths = data[(data['Patient'] == patient_num)
+                           & (data['Slice'] == slice_idx)]
+        slice_paths = slice_paths.sort_values(
+            ['Patient', 'Series', 'Volume', 'Slice'], ignore_index=True)
         image = []
         for path in slice_paths['ImagePath']:
             image.append(pdc.read_file(path).pixel_array)
-        images[slice_idx]=np.array(image)
+        images[slice_idx] = crop_image(np.array(image), crop)
     return images
 
 def get_AIF_label(map_path: str, aif_folder_path: str, patient: int) -> np.ndarray:
@@ -206,12 +208,20 @@ def get_AIF_label(map_path: str, aif_folder_path: str, patient: int) -> np.ndarr
         curve = curve.to_numpy().flatten()
     return curve
 
-def extract_AIF_mouridsen(images: dict, SEED: int, info: dict, visualize:bool = False) -> dict:
+def extract_AIF_mouridsen(images: dict, series_idx: int, SEED: int, visualize: bool, pred_type: str, min_voxels: int) -> dict:
     curves = {}
-    for slice_idx in images.keys():
-        image = images[slice_idx]
-        curves_coords = get_AIF_KMeans(image, SEED, max_voxels=20, visualize=visualize)
-        curves[slice_idx] = curves_coords
+    if pred_type == 'global':
+        image = np.stack(images.values())
+        curves_coords = get_AIF_KMeans(
+            image, SEED, min_voxels=min_voxels, visualize=False)
+        for slice_idx in images.keys():
+            curves[slice_idx] = curves_coords
+    else:
+        for slice_idx in images.keys():
+            image = images[slice_idx]
+            curves_coords = get_AIF_KMeans(
+                image, SEED, min_voxels=min_voxels, visualize=visualize)
+            curves[slice_idx] = curves_coords
     return curves
 
 def get_label_curves(image_data, label_path='AIF_images.xlsx', curve_path='D:\AIFs\AIFs\durable\BorrSci_MR_Data\Output'):
@@ -221,9 +231,6 @@ def get_label_curves(image_data, label_path='AIF_images.xlsx', curve_path='D:\AI
         c = get_AIF_label(label_path, curve_path, patient=p)
         label_curves[p] = c
     return label_curves
-
-def pass_through(x):
-    return x
 
 def visualize_curves(curves, curve_coord, patient_slice, TR, FA, signal_to_relaxation):
     if signal_to_relaxation is None:
@@ -242,37 +249,64 @@ def visualize_curves(curves, curve_coord, patient_slice, TR, FA, signal_to_relax
     for i in curve_coord:
         ax2.plot(i[1], i[0], ".r", markersize=1, linewidth = 0)
 
-def single_eval_curve(model, image_data:pd.DataFrame, patient:int, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, one_pred: bool):
-    images = image_data[image_data['Patient'] == patient]
-    MCA_slices, slice_info = get_MCA_prediction(model, images, vol_intensities, device, crop, one_pred)
-    filtered_slices = filter_slices_on_mca_prediction(images, patient, MCA_slices)
-    pred_curves = extract_AIF_mouridsen(filtered_slices, seed, slice_info, visualize)
-    return pred_curves, slice_info        
-    
-def eval_curves(model, image_data:pd.DataFrame, vol_intensities:np.ndarray, device: str, seed: int, crop: float, visualize: bool, signal_to_relaxation: Callable = None, one_pred: bool = True):
-    actual_curves = get_label_curves(image_data)
-    results = []
-    extractions = {}
-    labels = {}
-    for p in actual_curves.keys():
-        print(f"Patient {p}")
-        pred_curves, slice_info = single_eval_curve(model, image_data, p, vol_intensities, device, seed, crop, visualize, one_pred)
-        for s in pred_curves.keys():
-            if actual_curves[p] is None:
-                results.append([p, s, None, None, None])
-                continue
+def get_info(serie):
+    info = {}
+    img = serie.iloc[0]['ImagePath']
+    image = pdc.read_file(img)
+    info['FA'] = image.FlipAngle
+    info['TR'] = image.RepetitionTime
+    info['TD'] = image.EchoTime
+    return info
 
-            if visualize:
-                volume = int(np.squeeze(vol_intensities[np.where(vol_intensities[:, 0] == p)[0]])[1])
-                slice = image_data[((image_data['Patient'] == p) & (image_data["Slice"] == s)) & (image_data['Volume'] == volume)]
-                image = pdc.dcmread(slice['ImagePath'].item()).pixel_array
-                visualize_curves(pred_curves[s][0], pred_curves[s][1], image, slice_info['TR'], slice_info['FA'], signal_to_relaxation)
+def filter_slices_on_mca_prediction(data, patient_num: int, series, mca_slices: list, crop: int):
+    image_paths = get_image_volume(data, patient_num, series, mca_slices)
+    image = create_image_array(image_paths, crop)
+    return image
 
-            pred = np.mean(pred_curves[s][0], axis = 0)
-            if signal_to_relaxation is not None:
-                pred = signal_to_relaxation(pred, slice_info['TR'], slice_info['FA'])
-            extractions[(p,s)] = pred
-            labels[(p,s)] = actual_curves[p]
+def extract_AIF_mouridsen(images, SEED: int):
+    kmeans = mouridsen2006(seed=SEED)
+    curves = kmeans.predict(images)
+    mask = kmeans.get_mask()
+    return curves, mask
 
-            results.append([p, s, mae(actual_curves[p], pred), mse(actual_curves[p], pred, squared=False), r2(actual_curves[p], pred)])
-    return pd.DataFrame(results, columns=['Patient', 'Slice', 'MAE', 'RMSE', 'R2'], index=None), extractions, labels
+def get_pred_curves(model, image_data: pd.DataFrame, patients: List, vol_intensities: np.ndarray, device: str, seed: int, crop: float, pred_type: str):
+    if pred_type not in ["single", "all", "global", "sigmoid"]:
+        raise Exception(
+            f"Arg: one_pred must be one of \"single\", \"all\", \"global\", \"sigmoid\". Given argument: \"{pred_type}\"")
+    total_curves = {}
+    all_masks = {}
+    slice_info_dict = {}
+    for patient in patients:
+        patient_curves = {}
+        patient_info = {}
+        patient_mask = {}
+        images = image_data[image_data['Patient'] == patient]
+        for s in np.unique(images['Series']):
+            serie = images[images['Series'] == s]
+
+            if pred_type == 'global':
+                MCA_slices = np.unique(images['Slice'])
+                slice_info = get_info(serie)
+                filtered_slices = filter_slices_on_mca_prediction(
+                    serie, patient, s,  MCA_slices, crop)
+            else:
+                MCA_slices, slice_info = get_MCA_prediction(
+                    model, serie, vol_intensities, device, crop, pred_type)
+                filtered_slices = filter_slices_on_mca_prediction(
+                    serie, patient, s, MCA_slices, crop)
+
+            pred_curves, pred_mask = extract_AIF_mouridsen(filtered_slices, seed)
+
+            total_mask = np.full((pred_mask.shape[2], pred_mask.shape[3]), False)
+            for i in range(pred_mask.shape[1]):
+                total_mask = np.bitwise_or(total_mask, pred_mask[1, i, ...])
+
+            patient_curves[s] = pred_curves
+            patient_mask[s] = [total_mask, MCA_slices]
+            patient_info[s] = slice_info
+            
+        total_curves[patient] = patient_curves
+        all_masks[patient] = patient_mask
+        slice_info_dict[patient] = patient_info
+
+    return total_curves, slice_info_dict, all_masks    
