@@ -1,0 +1,1 @@
+{"growth_rate": 15, "init_features": 26, "bn_size": 4, "drop_rate": 0.017537088928317873, "lr": 3.901202698301639e-05}
